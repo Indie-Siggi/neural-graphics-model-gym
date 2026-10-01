@@ -324,6 +324,12 @@ class Dataset(PydanticConfigModel):
         description="Enable dataset augmentations e.g flips, rotations"
     )
     num_workers: int = Field(ge=0, description="Number of dataloader workers to use")
+    window_stride: int = Field(
+        default=1,
+        ge=1,
+        description="Frames between the starts of consecutive recurrent training/validation windows (1: a window "
+        "at every frame). The last window of each sequence is always kept, so every frame stays covered.",
+    )
     prefetch_factor: int = Field(
         gt=0,
         description="Number of batches loaded in advance by each dataloader worker. "

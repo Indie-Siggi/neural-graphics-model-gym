@@ -322,9 +322,17 @@ class NSSDataset(Dataset):
                 capture_sequences[capture] = camera_cut_sequences
                 capture_windows[capture] = []
                 window_sequence_map[capture] = {}
+                stride = (
+                    1
+                    if self.loader_mode == DataLoaderMode.TEST
+                    else self.config_params.dataset.window_stride
+                )
                 for seq_idx, (seq_start, seq_end) in enumerate(camera_cut_sequences):
                     max_start = seq_end - (n_frames - 1)
-                    for start in range(seq_start, max_start):
+                    starts = list(range(seq_start, max_start, stride))
+                    if starts and starts[-1] != max_start - 1:
+                        starts.append(max_start - 1)  # keep the sequence's last window
+                    for start in starts:
                         stop = start + n_frames
                         capture_windows[capture].append((start, stop))
                         window_sequence_map[capture][start] = seq_idx
