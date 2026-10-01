@@ -2,6 +2,7 @@
 # its affiliates <open-source-office@arm.com></text>
 # SPDX-License-Identifier: Apache-2.0
 import json
+import math
 import logging
 import shutil
 from datetime import datetime
@@ -103,8 +104,12 @@ class Trainer:
             self.training_mode_params, self.model.parameters()
         )
 
+        self.accumulation_steps = params.train.gradient_accumulation_steps
+        # The schedule counts optimizer steps, not batches.
         self.lr_schedule = get_lr_schedule(
-            self.training_mode_params, self.optimizer, len(self.train_dataloader)
+            self.training_mode_params,
+            self.optimizer,
+            math.ceil(len(self.train_dataloader) / self.accumulation_steps),
         )
 
         self._restore_model_weights()
@@ -333,10 +338,14 @@ class Trainer:
             return True
         return False
 
-    def _train_step(self, inputs_dataset, ground_truth_data):
-        """Run the training step"""
+    def _train_step(self, inputs_dataset, ground_truth_data, iteration=0, total_batches=1):
+        """Run the training step. With gradient accumulation, gradients of consecutive batches are summed (each
+        loss scaled by the number of batches in its group) and the optimizer steps once per group."""
 
-        self.optimizer.zero_grad()
+        group_start = iteration - iteration % self.accumulation_steps
+        group_size = min(self.accumulation_steps, total_batches - group_start)
+        if iteration == group_start:
+            self.optimizer.zero_grad()
 
         inputs_dataset, ground_truth_data = self.model.on_before_batch_transfer(
             (inputs_dataset, ground_truth_data)
@@ -358,11 +367,11 @@ class Trainer:
 
         loss = self._training_loss(ground_truth_data, inference_out)
 
-        loss.backward()
-        self.optimizer.step()
-
-        if self.lr_schedule:
-            self.lr_schedule.step()
+        (loss / group_size).backward()
+        if iteration + 1 == group_start + group_size:
+            self.optimizer.step()
+            if self.lr_schedule:
+                self.lr_schedule.step()
 
         return inference_out, loss, ground_truth_data
 
@@ -387,7 +396,7 @@ class Trainer:
             for iteration, (inputs_dataset, ground_truth_data) in train_pbar:
                 self.model.on_train_batch_start()
                 inference_out, loss, ground_truth_data = self._train_step(
-                    inputs_dataset, ground_truth_data
+                    inputs_dataset, ground_truth_data, iteration, total_batches
                 )
 
                 # Accumulate the loss

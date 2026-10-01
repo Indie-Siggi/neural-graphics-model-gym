@@ -497,6 +497,12 @@ class Train(PydanticConfigModel):
         default=False,
         description="Enable torch.compile for the training step.",
     )
+    gradient_accumulation_steps: int = Field(
+        default=1,
+        ge=1,
+        description="Number of batches whose gradients are summed before each optimizer step: the effective "
+        "batch size is batch_size * gradient_accumulation_steps, at the memory cost of batch_size.",
+    )
     validate_frequency: Union[int, List[int]] = Field(
         default=1,
         description=(
