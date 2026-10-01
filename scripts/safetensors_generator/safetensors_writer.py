@@ -150,11 +150,18 @@ class SafetensorsWriter:
                 initargs=(RLock(),),
                 initializer=tqdm_initialiser,
             ) as seq_pool:
-                for i, seq in enumerate(parallel_inps):
+                results = [
                     seq_pool.apply_async(
                         SafeAsync(seq_generator, seq),
                         args=(seq, i),
                     )
+                    for i, seq in enumerate(parallel_inps)
+                ]
+                # Leaving the `with` block calls terminate(): wait for every sequence first.
+                seq_pool.close()
+                seq_pool.join()
+                for result in results:
+                    result.get()
         else:
             # Single Threaded, one sequence at a time
             for seq_n in parallel_inps:
