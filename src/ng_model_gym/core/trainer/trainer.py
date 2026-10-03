@@ -163,10 +163,20 @@ class Trainer:
             torch._dynamo.config.capture_scalar_outputs = True
             logger.info("torch.compile is enabled for training")
 
-        self._training_model = torch.compile(
-            self.model,
-            disable=not compile_enabled,
-        )
+        if (
+            compile_enabled
+            and self.params.train.compile_unit == "frame"
+            and hasattr(self.model, "core_forward")
+        ):
+            # Compile the one-frame step only; the recurrent loop around it runs eagerly. The graph is a
+            # fraction of the unrolled one, so it traces and lowers much faster.
+            self.model.core_forward = torch.compile(self.model.core_forward)
+            self._training_model = self.model
+        else:
+            self._training_model = torch.compile(
+                self.model,
+                disable=not compile_enabled,
+            )
         self._training_loss = torch.compile(
             self.criterion,
             disable=not compile_enabled,
@@ -387,8 +397,10 @@ class Trainer:
             self.model.train()
             self.model.on_train_epoch_start()
 
-            running_epoch_loss = 0.0
+            # Accumulated on the device: reading it back is a GPU sync, done only when logging
+            running_epoch_loss = torch.zeros((), dtype=torch.float64, device=self.device)
             total_batches = len(self.train_dataloader)
+            log_interval = self.params.train.log_interval
             train_pbar = tqdm(
                 enumerate(self.train_dataloader, 0),
                 total=total_batches,
@@ -403,32 +415,34 @@ class Trainer:
                 )
 
                 # Accumulate the loss
-                running_epoch_loss += loss.item()
-
-                # Calculate average loss
-                avg_loss = running_epoch_loss / (iteration + 1)
-
-                progress_bar = (
-                    f"Train: Epoch {epoch}/{total_epochs}, "
-                    f"Running Average Loss: {avg_loss:.4f}, "
-                    f"Mini batch Loss: {loss.item():.4f}, "
-                )
-
-                for metric in self.train_metrics:
-                    metric.update(inference_out["output"], ground_truth_data)
-                    progress_bar += f"{metric}: {metric.compute():.4f}, "
+                running_epoch_loss += loss.detach()
 
                 if profiler:
                     profiler.step()
 
-                train_pbar.set_description(progress_bar)
+                if (iteration + 1) % log_interval == 0 or iteration + 1 == total_batches:
+                    # Train metrics are sampled on logging batches only: updating them (SSIM etc. over every frame of
+                    # the window) costs ~28 % of a training step. The loss average stays over all batches.
+                    for metric in self.train_metrics:
+                        metric.update(inference_out["output"], ground_truth_data)
+                    # Calculate average loss
+                    avg_loss = running_epoch_loss.item() / (iteration + 1)
+                    tb_values = self._get_values_for_logging(
+                        {"Loss": avg_loss}, self.train_metrics, name="Train/"
+                    )
 
-                tb_values = self._get_values_for_logging(
-                    {"Loss": avg_loss}, self.train_metrics, name="Train/"
-                )
-                self._tensorboard_update(
-                    tb_values, iteration + (epoch - 1) * total_batches
-                )
+                    progress_bar = (
+                        f"Train: Epoch {epoch}/{total_epochs}, "
+                        f"Running Average Loss: {avg_loss:.4f}, "
+                        f"Mini batch Loss: {loss.item():.4f}, "
+                    )
+                    for metric in self.train_metrics:
+                        progress_bar += f"{metric}: {tb_values['Train/' + str(metric)]:.4f}, "
+                    train_pbar.set_description(progress_bar)
+
+                    self._tensorboard_update(
+                        tb_values, iteration + (epoch - 1) * total_batches
+                    )
                 self.model.on_train_batch_end()
 
             for metric in self.train_metrics:

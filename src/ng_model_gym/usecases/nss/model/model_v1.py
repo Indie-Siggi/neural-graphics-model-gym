@@ -210,7 +210,12 @@ class NSSV1Model(BaseNGModel):
             nearest_depth_offset,
         ) = self.preprocess(inputs)
 
-        kpn_params, temporal_params = self.autoencoder(input_tensor)
+        if self.params.train.network_dtype == "bf16" and input_tensor.device.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                kpn_params, temporal_params = self.autoencoder(input_tensor)
+            kpn_params, temporal_params = kpn_params.float(), temporal_params.float()
+        else:
+            kpn_params, temporal_params = self.autoencoder(input_tensor)
 
         outputs = self.postprocess(
             kpn_params,

@@ -515,6 +515,16 @@ class Train(PydanticConfigModel):
         description="Batches between progress-bar/TensorBoard updates. Train metrics are also only updated on these "
         "batches (a sample; updating them costs ~28 % of a step), while the loss average and validation use every batch.",
     )
+    compile_unit: Literal["step", "frame"] = Field(
+        default="step",
+        description="What torch.compile compiles: the whole recurrent forward (step) or only the model's "
+        "one-frame core_forward, with the recurrent loop eager (frame; much faster to compile).",
+    )
+    network_dtype: Literal["fp32", "bf16"] = Field(
+        default="fp32",
+        description="Compute dtype of the neural network on CUDA: bf16 runs it under torch.autocast. Weights, "
+        "optimizer state and the pre/post-processing stay fp32.",
+    )
     validate_frequency: Union[int, List[int]] = Field(
         default=1,
         description=(
