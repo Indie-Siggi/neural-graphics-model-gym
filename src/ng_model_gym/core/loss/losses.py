@@ -39,7 +39,10 @@ class LossV1(torch.nn.Module):
     ):
         super().__init__()
         self.recurrent_samples = recurrent_samples
-        self.device = device
+        # With an explicit index, so it compares equal to the predictions' device (see _ensure_device)
+        self.device = torch.device(device)
+        if self.device.type == "cuda" and self.device.index is None:
+            self.device = torch.device("cuda", torch.cuda.current_device())
         self.loss_args = loss_args or {}
 
         self.lpips_net = self._fetch_value(self.loss_args, "lpips_net", "alex")
@@ -250,6 +253,9 @@ class LossV1(torch.nn.Module):
     def _ensure_device(self, device: torch.device) -> None:
         """Keep helper modules on the active prediction device."""
 
+        # Move only on a real change: Module.to() inside the compiled loss is a graph break on every call.
+        if device == self.device:
+            return
         self.device = device
         self.warp = self.warp.to(device)
         self.lpips_loss = self.lpips_loss.to(device)
