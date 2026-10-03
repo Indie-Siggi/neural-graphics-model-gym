@@ -509,6 +509,12 @@ class Train(PydanticConfigModel):
         description="Number of batches whose gradients are summed before each optimizer step: the effective "
         "batch size is batch_size * gradient_accumulation_steps, at the memory cost of batch_size.",
     )
+    log_interval: int = Field(
+        default=1,
+        ge=1,
+        description="Batches between progress-bar/TensorBoard updates. Train metrics are also only updated on these "
+        "batches (a sample; updating them costs ~28 % of a step), while the loss average and validation use every batch.",
+    )
     validate_frequency: Union[int, List[int]] = Field(
         default=1,
         description=(

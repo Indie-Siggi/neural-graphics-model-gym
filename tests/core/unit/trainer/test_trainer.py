@@ -92,6 +92,13 @@ class TinyModelWithWeightsLoadHook(TinyModel):
         return prepared
 
 
+def _mock_params():
+    """Mock config with the train fields Trainer.train() reads as numbers."""
+    params = Mock()
+    params.train.log_interval = 1
+    return params
+
+
 class TestTrainerMethods(unittest.TestCase):
     """Tests for Trainer class"""
 
@@ -106,9 +113,11 @@ class TestTrainerMethods(unittest.TestCase):
         )
 
         # --- Config ---
-        self.mock_trainer.training_mode_params = Mock()
+        self.mock_trainer.training_mode_params = _mock_params()
         self.mock_trainer.training_mode_params.number_of_epochs = 10
         self.mock_trainer.starting_epoch = 1
+        self.mock_trainer.accumulation_steps = 1
+        self.mock_trainer.params = _mock_params()
         self.mock_trainer.device = torch.device("cpu")
         self.mock_trainer.train_metrics = []
         self.mock_trainer.val_metrics = []
@@ -127,10 +136,9 @@ class TestTrainerMethods(unittest.TestCase):
         ]
 
         # --- Loss / Criterion ---
-        mock_loss = Mock()
-        mock_loss.backward = Mock()
-        mock_loss.item = Mock(return_value=0.1)
-        self.mock_trainer.criterion = Mock(return_value=mock_loss)
+        self.mock_trainer.criterion = Mock(
+            return_value=torch.tensor(0.1, requires_grad=True)
+        )
         self.mock_trainer._training_model = self.mock_trainer.model
         self.mock_trainer._training_loss = self.mock_trainer.criterion
         self.mock_trainer._train_step = MethodType(
@@ -151,7 +159,7 @@ class TestTrainerMethods(unittest.TestCase):
 
     def test_train_calls_validate_every_3_epochs(self):
         """Ensure Trainer.train() only triggers validate() on configured epochs"""
-        self.mock_trainer.params = Mock()
+        self.mock_trainer.params = _mock_params()
         self.mock_trainer.params.train.perform_validate = True
         self.mock_trainer.params.train.validate_frequency = 3
 
@@ -217,7 +225,7 @@ class TestTrainerMethods(unittest.TestCase):
 
     def test_train_calls_validate_on_specific_epochs(self):
         """Ensure Trainer.train() only triggers validate() on configured epochs"""
-        self.mock_trainer.params = Mock()
+        self.mock_trainer.params = _mock_params()
         self.mock_trainer.params.train.perform_validate = True
         self.mock_trainer.params.train.validate_frequency = [1, 2, 5, 9]
 
@@ -255,7 +263,7 @@ class TestTrainerMethods(unittest.TestCase):
         trainer.training_mode_params.number_of_epochs = 2
         trainer.starting_epoch = 1
 
-        trainer.params = Mock()
+        trainer.params = _mock_params()
         trainer.params.train.perform_validate = True
         trainer.params.train.validate_frequency = 1
 
@@ -292,7 +300,7 @@ class TestTrainerMethods(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             trainer = self.mock_trainer
             trainer.model_save_path = temp_dir
-            trainer.params = Mock()
+            trainer.params = _mock_params()
             trainer.params.train.perform_validate = True
             trainer.avg_val_loss = 0.25  # lower is better
 
@@ -341,7 +349,7 @@ class TestTrainerMethods(unittest.TestCase):
 
     def test_restoring_model_weights(self):
         """Test model weights are restored correctly"""
-        self.mock_trainer.params = Mock()
+        self.mock_trainer.params = _mock_params()
         self.mock_trainer.params.train.perform_validate = False
 
         # Create temp dir for saving checkpoints

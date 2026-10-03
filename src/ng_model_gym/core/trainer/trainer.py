@@ -458,7 +458,9 @@ class Trainer:
 
         self.model.eval()
         self.model.on_validation_start()
-        running_val_loss = 0.0
+        running_val_loss = torch.zeros((), dtype=torch.float64, device=self.device)
+        total_batches = len(self.val_dataloader)
+        log_interval = self.params.train.log_interval
 
         for iteration, (inputs_dataset, ground_truth_data) in val_pbar:
             # Move tensors to device.
@@ -473,26 +475,29 @@ class Trainer:
 
             self.model.y_true = ground_truth_data
 
-            inference_out = self.model(inputs_dataset)
+            # Same module and weights as self.model; compiled when train.compile is set
+            inference_out = self._training_model(inputs_dataset)
 
-            loss = self.criterion(ground_truth_data, inference_out)
+            loss = self._training_loss(ground_truth_data, inference_out)
 
             # Accumulate the loss
-            running_val_loss += loss.item()
-
-            # Calculate average loss
-            self.avg_val_loss = running_val_loss / (iteration + 1)
-
-            progress_bar = (
-                f"Validation: Epoch {epoch}/{total_epochs}, "
-                f"Avg. Loss: {self.avg_val_loss:.4f}, "
-            )
+            running_val_loss += loss.detach()
 
             for metric in self.val_metrics:
                 metric.update(inference_out["output"], ground_truth_data)
-                progress_bar += f"{metric}: {metric.compute():.4f}, "
 
-            val_pbar.set_description(progress_bar)
+            if (iteration + 1) % log_interval == 0 or iteration + 1 == total_batches:
+                # Calculate average loss
+                self.avg_val_loss = running_val_loss.item() / (iteration + 1)
+
+                progress_bar = (
+                    f"Validation: Epoch {epoch}/{total_epochs}, "
+                    f"Avg. Loss: {self.avg_val_loss:.4f}, "
+                )
+                for metric in self.val_metrics:
+                    progress_bar += f"{metric}: {metric.compute():.4f}, "
+
+                val_pbar.set_description(progress_bar)
 
         #  Push validation set results to Tensorboard.
         tb_values = self._get_values_for_logging(
