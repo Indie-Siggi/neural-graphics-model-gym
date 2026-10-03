@@ -632,23 +632,25 @@ class TestNSSV1Model(  # pylint: disable=too-many-public-methods
                     atol=0,
                 )
 
-    def test_half_res_post_process_metadata_requires_initialized_lut_cache(
-        self,
-    ) -> None:
-        """Half-resolution post-process metadata rejects use before LUT initialization."""
+    def test_offset_lut_leaves_model_state_unchanged(self) -> None:
+        """The offset LUT is pure: no module state that torch.compile would have to guard on."""
 
-        self.params.model.quality = "mid"
-        model = create_model(self.params, self.device)
-        jitter = torch.zeros(self.batch_size, 2, 1, 1, device=self.device)
+        for model_quality in ("mid", "high"):
+            with self.subTest(model_quality=model_quality):
+                self.params.model.quality = model_quality
+                model = create_model(self.params, self.device)
+                jitter = torch.zeros(self.batch_size, 2, 1, 1, device=self.device)
+                before = dict(vars(model))
 
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "Offset LUT modulo must be initialized first",
-        ):
-            model._post_process_idx_modulo(
-                jitter,
-                in_shape=(self.batch_size, 3, 8, 10),
-            )
+                model._generate_offset_lut(
+                    jitter,
+                    in_shape=(self.batch_size, 3, 8, 10),
+                    out_shape=(self.batch_size, 3, 16, 20),
+                )
+
+                self.assertEqual(vars(model).keys(), before.keys())
+                for key, value in before.items():
+                    self.assertIs(vars(model)[key], value, key)
 
     def test_common_slang_defines(self) -> None:
         """

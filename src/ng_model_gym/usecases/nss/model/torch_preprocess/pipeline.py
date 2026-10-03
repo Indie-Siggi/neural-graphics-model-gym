@@ -190,7 +190,6 @@ def _match_slang_input_vjp(value: torch.Tensor) -> torch.Tensor:
     return detached + (value - detached) * 2.0
 
 
-@torch.compiler.disable
 def preprocess_torch(
     preprocess_input: Mapping[str, torch.Tensor],
     *,

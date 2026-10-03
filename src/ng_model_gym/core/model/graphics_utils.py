@@ -276,16 +276,17 @@ def generate_lr_to_hr_tile(
     offset_flat = offset.permute(0, 2, 3, 1).reshape(-1, 2)
 
     valid = (hy >= 0) & (hy < h_hr) & (hx >= 0) & (hx < w_hr)
-    n_idx = n_idx[valid]
-    hy = hy[valid]
-    hx = hx[valid]
-    dy, dx = offset_flat[valid].T
+    dy, dx = offset_flat.T
 
-    out = torch.zeros((n, 4, h_hr, w_hr), dtype=torch.float32, device=device)
-    out[n_idx, 0, hy, hx] = dy.float()
-    out[n_idx, 1, hy, hx] = dx.float()
-    out[n_idx, 2, hy, hx] = 1.0
-    return out
+    # Write every lane, sending invalid ones to a trailing trash slot, so the shapes stay static (no boolean-mask
+    # selection) and torch.compile can trace through. Valid lanes land exactly where the masked writes put them.
+    plane = h_hr * w_hr
+    trash = n * 4 * plane
+    base = n_idx * (4 * plane) + hy.clamp(0, h_hr - 1) * w_hr + hx.clamp(0, w_hr - 1)
+    out = torch.zeros(trash + 1, dtype=torch.float32, device=device)
+    for channel, value in ((0, dy.float()), (1, dx.float()), (2, torch.ones_like(dy, dtype=torch.float32))):
+        out.index_put_((torch.where(valid, base + channel * plane, trash),), value)
+    return out[:trash].view(n, 4, h_hr, w_hr)
 
 
 def swizzle(x: torch.Tensor, pattern: str) -> torch.Tensor:

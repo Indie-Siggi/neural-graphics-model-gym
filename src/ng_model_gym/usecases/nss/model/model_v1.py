@@ -100,12 +100,6 @@ class NSSV1Model(BaseNGModel):
         self.filter_kernel_taps = self.filter_kernel_size * self.filter_kernel_size
         self.motion_key = "motion_lr"
 
-        self._lut_in_shape: Optional[tuple[int, int, int, int]] = None
-        self._lut_out_shape: Optional[tuple[int, int, int, int]] = None
-        self._lut_height_map: Optional[tuple[int, int]] = None
-        self._lut_width_map: Optional[tuple[int, int]] = None
-        self._lut_idx_mod: Optional[torch.Tensor] = None
-
     def get_neural_network(self) -> nn.Module:
         """Return the trainable NSS v1 neural network."""
         return self.autoencoder
@@ -1145,7 +1139,6 @@ class NSSV1Model(BaseNGModel):
 
         return 2 if self.packed_nearest_offset_quad else 1
 
-    @torch.compiler.disable
     def _generate_offset_lut(
         self,
         jitter: torch.Tensor,
@@ -1154,30 +1147,19 @@ class NSSV1Model(BaseNGModel):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Generate the NSS v1 post-process offset LUT and modulo tensor."""
 
+        # Recomputed on every call (pure shape arithmetic, cheap) and kept local: no is-cached branch or module
+        # state that would flip after the first call and make torch.compile trace the step again.
         in_shape = tuple(in_shape)
         out_shape = tuple(out_shape)
-        if (
-            self._lut_in_shape != in_shape
-            or self._lut_out_shape != out_shape
-            or self._lut_idx_mod is None
-            or self._lut_height_map is None
-            or self._lut_width_map is None
-        ):
-            height_map, width_map, idx_mod = calculate_lr_to_hr_modulo(
-                in_shape,
-                out_shape,
-                jitter,
-            )
-            self._lut_in_shape = in_shape
-            self._lut_out_shape = out_shape
-            self._lut_height_map = height_map
-            self._lut_width_map = width_map
-            self._lut_idx_mod = idx_mod.reshape(1, 1, 1, 2).to(
-                dtype=torch.float32,
-                device=jitter.device,
-            )
-        elif self._lut_idx_mod.device != jitter.device:
-            self._lut_idx_mod = self._lut_idx_mod.to(device=jitter.device)
+        height_map, width_map, idx_mod = calculate_lr_to_hr_modulo(
+            in_shape,
+            out_shape,
+            jitter,
+        )
+        idx_mod = idx_mod.reshape(1, 1, 1, 2).to(
+            dtype=torch.float32,
+            device=jitter.device,
+        )
 
         scale_yx = (
             float(out_shape[2]) / float(in_shape[2]),
@@ -1186,35 +1168,35 @@ class NSSV1Model(BaseNGModel):
         base_lut = generate_lr_to_hr_tile(
             scale_yx,
             jitter,
-            self._lut_height_map,
-            self._lut_width_map,
+            height_map,
+            width_map,
         )
-        offset_lut = self._compute_lut(base_lut, self._lut_idx_mod)
-        idx_modulo = self._post_process_idx_modulo(jitter, in_shape)
+        # The modulo is shape-derived (calculate_lr_to_hr_modulo), so pass the ints rather than reading the
+        # tensor back with .item(), which would break the torch.compile graph.
+        offset_lut = self._compute_lut(base_lut, (height_map[1], width_map[1]))
+        idx_modulo = self._post_process_idx_modulo(idx_mod, jitter, in_shape)
         return offset_lut, idx_modulo
 
     def _post_process_idx_modulo(
         self,
+        idx_mod: torch.Tensor,
         jitter: torch.Tensor,
         in_shape: tuple[int, int, int, int],
     ) -> torch.Tensor:
         """Return idx/modulo metadata in the layout expected by post_process."""
 
-        if self._lut_idx_mod is None:
-            raise RuntimeError("Offset LUT modulo must be initialized first.")
-
         if not self.preprocess_half_res_input:
-            return self._lut_idx_mod
+            return idx_mod
 
         process_h, process_w, _, _ = self._derive_process_and_padded_spatial(
             in_shape[2],
             in_shape[3],
         )
         batch = in_shape[0]
-        idx_mod_hw = self._lut_idx_mod.expand(batch, -1, -1, -1)
+        idx_mod_hw = idx_mod.expand(batch, -1, -1, -1)
         idx_modulo = torch.empty(
             (batch, 4, 1, 1),
-            dtype=self._lut_idx_mod.dtype,
+            dtype=idx_mod.dtype,
             device=jitter.device,
         )
         idx_modulo[:, 0, 0, 0] = idx_mod_hw[:, 0, 0, 0]
@@ -1226,12 +1208,11 @@ class NSSV1Model(BaseNGModel):
     def _compute_lut(
         self,
         base_lut: torch.Tensor,
-        idx_mod: torch.Tensor,
+        idx_mod: tuple[int, int],
     ) -> torch.Tensor:
         """Build the compact KPN sampling LUT used by the v1 post-process shader."""
 
-        idx_mod_h = int(idx_mod[..., 0].item())
-        idx_mod_w = int(idx_mod[..., 1].item())
+        idx_mod_h, idx_mod_w = (int(v) for v in idx_mod)
         kernel_window = 6
         taps_needed = self.filter_kernel_taps
         num_offsets = kernel_window * kernel_window

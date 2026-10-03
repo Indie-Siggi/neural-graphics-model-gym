@@ -126,10 +126,12 @@ def _reconstruct_previous_depth(
             + position[..., 0].clamp(0, output_height - 1) * output_width
             + position[..., 1].clamp(0, output_width - 1)
         )
+        # Inactive lanes scatter INT32_MAX, a no-op under amin over an INT32_MAX-filled output; this keeps the
+        # shapes static (no boolean-mask selection) so torch.compile can trace through.
         output.scatter_reduce_(
             0,
-            flat_index[active],
-            int_depth[active],
+            flat_index.reshape(-1),
+            torch.where(active, int_depth, int_depth.new_full((), _INT32_MAX)).reshape(-1),
             reduce="amin",
             include_self=True,
         )

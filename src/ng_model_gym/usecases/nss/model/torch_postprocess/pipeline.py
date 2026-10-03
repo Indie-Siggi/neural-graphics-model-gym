@@ -265,7 +265,6 @@ def _validate_postprocess_inputs(  # pylint: disable=too-many-branches
     )
 
 
-@torch.compiler.disable
 def postprocess_torch(
     *,
     in_color: torch.Tensor,
