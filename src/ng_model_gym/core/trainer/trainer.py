@@ -55,6 +55,20 @@ def _state_dict_has_qat_markers(state_dict: Mapping[str, object]) -> bool:
     )
 
 
+def stuck_fractions(outputs, as_tensor=False, eps=1e-6):
+    """Fraction of the network's sigmoid head outputs within `eps` of 0 or 1, where their gradient vanishes.
+    A healthy run keeps these near 0; a run whose heads saturated (and stopped learning) goes towards 1."""
+
+    out = {}
+    for key, name in (("kpn_params", "StuckKPN"), ("temporal_params", "StuckTemporal")):
+        value = outputs.get(key) if isinstance(outputs, dict) else None
+        if isinstance(value, torch.Tensor):
+            value = value.detach()
+            frac = ((value < eps) | (value > 1 - eps)).float().mean()
+            out[name] = frac if as_tensor else frac.item()
+    return out
+
+
 class Trainer:
     """Instantiates the model, data loader and runs training"""
 
@@ -108,6 +122,11 @@ class Trainer:
         )
 
         self.accumulation_steps = params.train.gradient_accumulation_steps
+        self.grad_clip_norm = params.train.grad_clip_norm
+        # Per-batch loss and per-optimizer-step gradient norm, kept on the device and written to
+        # <output dir>/train_steps.csv on logging batches (one sync per log interval).
+        self._step_log = []
+        self._step_log_path = Path(params.output.dir) / "train_steps.csv"
         # The schedule counts optimizer steps, not batches.
         self.lr_schedule = get_lr_schedule(
             self.training_mode_params,
@@ -151,7 +170,10 @@ class Trainer:
             setattr(
                 self.model,
                 "required_context_keys",
-                None if required_context_keys is None else tuple(required_context_keys),
+                # plus the KPN head, for the saturation health metric (stuck_fractions)
+                None
+                if required_context_keys is None
+                else tuple(required_context_keys) + ("kpn_params",),
             )
 
         compile_enabled = self.params.train.compile
@@ -381,12 +403,41 @@ class Trainer:
         loss = self._training_loss(ground_truth_data, inference_out)
 
         (loss / group_size).backward()
+        grad_norm = None
         if iteration + 1 == group_start + group_size:
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.grad_clip_norm if self.grad_clip_norm is not None else float("inf"),
+            )
             self.optimizer.step()
             if self.lr_schedule:
                 self.lr_schedule.step()
 
+        self._step_log.append((iteration, loss.detach(), grad_norm))
         return inference_out, loss, ground_truth_data
+
+    def _flush_step_log(self, epoch):
+        """Append the buffered per-batch loss and per-step gradient norm to train_steps.csv. Returns the largest
+        gradient norm since the last flush (None if no optimizer step happened)."""
+
+        if not self._step_log:
+            return None
+        losses = torch.stack([l for _, l, _ in self._step_log]).tolist()
+        norms = [n for _, _, n in self._step_log if n is not None]
+        norms = iter(torch.stack(norms).tolist()) if norms else iter(())
+        new_file = not self._step_log_path.exists()
+        self._step_log_path.parent.mkdir(parents=True, exist_ok=True)
+        max_norm = None
+        with open(self._step_log_path, "a", encoding="utf-8") as f:
+            if new_file:
+                f.write("epoch,batch,loss,grad_norm\n")
+            for (batch, _, n), loss_value in zip(self._step_log, losses):
+                norm = next(norms) if n is not None else None
+                if norm is not None:
+                    max_norm = norm if max_norm is None else max(max_norm, norm)
+                f.write(f"{epoch},{batch},{loss_value:.6g},{'' if norm is None else f'{norm:.6g}'}\n")
+        self._step_log.clear()
+        return max_norm
 
     def train(self, profiler: Optional[torch.profiler.profile] = None):
         """Start training loop"""
@@ -427,8 +478,13 @@ class Trainer:
                         metric.update(inference_out["output"], ground_truth_data)
                     # Calculate average loss
                     avg_loss = running_epoch_loss.item() / (iteration + 1)
+                    log_values = {"Loss": avg_loss}
+                    max_grad_norm = self._flush_step_log(epoch)
+                    if max_grad_norm is not None:
+                        log_values["GradNormMax"] = max_grad_norm
+                    log_values.update(stuck_fractions(inference_out))
                     tb_values = self._get_values_for_logging(
-                        {"Loss": avg_loss}, self.train_metrics, name="Train/"
+                        log_values, self.train_metrics, name="Train/"
                     )
 
                     progress_bar = (
@@ -436,6 +492,8 @@ class Trainer:
                         f"Running Average Loss: {avg_loss:.4f}, "
                         f"Mini batch Loss: {loss.item():.4f}, "
                     )
+                    if max_grad_norm is not None:
+                        progress_bar += f"Max grad norm: {max_grad_norm:.3g}, "
                     for metric in self.train_metrics:
                         progress_bar += f"{metric}: {tb_values['Train/' + str(metric)]:.4f}, "
                     train_pbar.set_description(progress_bar)
@@ -445,6 +503,7 @@ class Trainer:
                     )
                 self.model.on_train_batch_end()
 
+            self._flush_step_log(epoch)
             for metric in self.train_metrics:
                 metric.reset()
 
@@ -473,6 +532,7 @@ class Trainer:
         self.model.eval()
         self.model.on_validation_start()
         running_val_loss = torch.zeros((), dtype=torch.float64, device=self.device)
+        stuck_sums = {}
         total_batches = len(self.val_dataloader)
         log_interval = self.params.train.log_interval
 
@@ -496,6 +556,8 @@ class Trainer:
 
             # Accumulate the loss
             running_val_loss += loss.detach()
+            for k, v in stuck_fractions(inference_out, as_tensor=True).items():
+                stuck_sums[k] = stuck_sums.get(k, 0) + v
 
             for metric in self.val_metrics:
                 metric.update(inference_out["output"], ground_truth_data)
@@ -514,9 +576,16 @@ class Trainer:
                 val_pbar.set_description(progress_bar)
 
         #  Push validation set results to Tensorboard.
+        log_values = {"Loss": self.avg_val_loss}
+        log_values.update({k: v.item() / total_batches for k, v in stuck_sums.items()})
         tb_values = self._get_values_for_logging(
-            {"Loss": self.avg_val_loss}, self.val_metrics, name="Validation/"
+            log_values, self.val_metrics, name="Validation/"
         )
+        if stuck_sums:
+            logger.info(
+                f"Validation epoch {epoch}: saturated sigmoid outputs "
+                + ", ".join(f"{k} {100 * log_values[k]:.2f} %" for k in stuck_sums)
+            )
         self._tensorboard_update(tb_values, epoch)
 
         for metric in self.val_metrics:

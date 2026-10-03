@@ -627,7 +627,7 @@ class TestNSSV1TorchPostprocessCPU(unittest.TestCase):
 
         self.assertEqual(
             set(outputs),
-            set(NSS_V1_CORE_OUTPUT_KEYS),
+            set(NSS_V1_CORE_OUTPUT_KEYS) | {"kpn_params"},  # not in the goldens
         )
         for value in outputs.values():
             self.assertEqual(value.device.type, "cpu")

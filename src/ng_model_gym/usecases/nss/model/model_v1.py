@@ -440,6 +440,7 @@ class NSSV1Model(BaseNGModel):
             "output_linear": output_linear,
             "out_filtered": out_filtered_tm,
             "temporal_params": temporal_params,
+            "kpn_params": kpn_params,
             "disocclusion_mask": disocclusion_mask,
             "derivative": derivative,
             "ground_truth": tonemap_forward(

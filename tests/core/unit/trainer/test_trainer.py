@@ -16,6 +16,7 @@ from torch import nn, optim
 from ng_model_gym.core.loss import LossV1
 from ng_model_gym.core.optimizers import LARS
 from ng_model_gym.core.trainer import get_loss_fn, get_optimizer_type, Trainer
+from ng_model_gym.core.trainer.trainer import stuck_fractions
 from ng_model_gym.core.utils.enum_definitions import (
     LossFn,
     OptimizerType,
@@ -117,6 +118,13 @@ class TestTrainerMethods(unittest.TestCase):
         self.mock_trainer.training_mode_params.number_of_epochs = 10
         self.mock_trainer.starting_epoch = 1
         self.mock_trainer.accumulation_steps = 1
+        self.mock_trainer.grad_clip_norm = None
+        self.mock_trainer._step_log = []
+        self._tmp = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
+        self.mock_trainer._step_log_path = Path(self._tmp.name) / "train_steps.csv"
+        self.mock_trainer._flush_step_log = MethodType(
+            Trainer._flush_step_log, self.mock_trainer
+        )
         self.mock_trainer.params = _mock_params()
         self.mock_trainer.device = torch.device("cpu")
         self.mock_trainer.train_metrics = []
@@ -156,6 +164,55 @@ class TestTrainerMethods(unittest.TestCase):
     def tearDown(self):
         """Re-enable logging"""
         logging.disable(logging.NOTSET)
+        self._tmp.cleanup()
+
+    def _train_with_weight_loss(self, scale):
+        """Train one epoch on a loss whose gradient norm is `scale` x |input|."""
+        model = self.mock_trainer.model
+        self.mock_trainer.criterion = Mock(
+            side_effect=lambda gt, out: (model.layer.weight * scale).sum()
+        )
+        self.mock_trainer._training_loss = self.mock_trainer.criterion
+        self.mock_trainer.training_mode_params.number_of_epochs = 1
+        self.mock_trainer.params.train.perform_validate = False
+        Trainer.train(self.mock_trainer)
+
+    def test_grad_clip_norm_limits_the_step(self):
+        """With train.grad_clip_norm the global gradient norm is clipped before the step"""
+        self.mock_trainer.grad_clip_norm = 1.0
+        seen = []
+        step = self.mock_trainer.optimizer.step
+
+        def checked_step():
+            seen.append(self.mock_trainer.model.layer.weight.grad.norm().item())
+            step()
+
+        self.mock_trainer.optimizer.step = checked_step
+        self._train_with_weight_loss(1000.0)
+        self.assertEqual(len(seen), 10)
+        self.assertTrue(all(abs(n - 1.0) < 1e-5 for n in seen))
+
+    def test_step_log_records_loss_and_grad_norm(self):
+        """train_steps.csv gets one row per batch with the unclipped gradient norm"""
+        self.mock_trainer.accumulation_steps = 2
+        self._train_with_weight_loss(3.0)
+        rows = self.mock_trainer._step_log_path.read_text().splitlines()
+        self.assertEqual(rows[0], "epoch,batch,loss,grad_norm")
+        self.assertEqual(len(rows), 11)
+        norms = [r.split(",")[3] for r in rows[1:]]
+        self.assertEqual(norms[0::2], [""] * 5)  # no optimizer step on the first batch of a group
+        self.assertTrue(all(abs(float(n) - 3.0) < 1e-4 for n in norms[1::2]))
+
+    def test_stuck_fractions(self):
+        """Saturated sigmoid outputs are counted per head"""
+        out = {
+            "kpn_params": torch.tensor([0.0, 1.0, 0.5, 0.2]),
+            "temporal_params": torch.tensor([0.3, 0.7]),
+        }
+        self.assertEqual(
+            stuck_fractions(out), {"StuckKPN": 0.5, "StuckTemporal": 0.0}
+        )
+        self.assertEqual(stuck_fractions({"output": torch.zeros(1)}), {})
 
     def test_train_calls_validate_every_3_epochs(self):
         """Ensure Trainer.train() only triggers validate() on configured epochs"""
@@ -200,12 +257,12 @@ class TestTrainerMethods(unittest.TestCase):
 
             self.assertEqual(
                 model_context_at_compile,
-                [("output", "out_filtered")],
+                [("output", "out_filtered", "kpn_params")],
             )
             self.assertIs(compile_.call_args_list[0].args[0], trainer.model)
             self.assertEqual(
                 trainer.model.required_context_keys,
-                trainer.criterion.required_context_keys,
+                trainer.criterion.required_context_keys + ("kpn_params",),
             )
             self.assertIsInstance(trainer.model.required_context_keys, tuple)
             self.assertIs(
@@ -217,7 +274,7 @@ class TestTrainerMethods(unittest.TestCase):
             trainer.criterion = nn.L1Loss()
             Trainer._set_up_torch_compile(trainer)
 
-        self.assertEqual(model_context_at_compile, [("output", "out_filtered"), None])
+        self.assertEqual(model_context_at_compile, [("output", "out_filtered", "kpn_params"), None])
         self.assertIsNone(trainer.model.required_context_keys)
         self.assertIs(trainer._training_model, trainer.model)
         self.assertIs(trainer._training_loss, trainer.criterion)

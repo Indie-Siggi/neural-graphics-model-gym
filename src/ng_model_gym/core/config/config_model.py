@@ -515,6 +515,12 @@ class Train(PydanticConfigModel):
         description="Batches between progress-bar/TensorBoard updates. Train metrics are also only updated on these "
         "batches (a sample; updating them costs ~28 % of a step), while the loss average and validation use every batch.",
     )
+    grad_clip_norm: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description="Clip the global gradient norm to this value before each optimizer step; null disables "
+        "clipping. The norm is logged either way.",
+    )
     compile_unit: Literal["step", "frame"] = Field(
         default="step",
         description="What torch.compile compiles: the whole recurrent forward (step) or only the model's "
