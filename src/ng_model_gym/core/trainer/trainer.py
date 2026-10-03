@@ -36,6 +36,7 @@ from ng_model_gym.core.utils.enum_definitions import (
     TrainEvalMode,
 )
 from ng_model_gym.core.utils.io.file_utils import create_directory
+from ng_model_gym.core.utils.torch_utils import fix_randomness
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,8 @@ class Trainer:
 
     def __init__(self, params: ConfigModel):
         self.params = params
+        # Before anything random (model init, augmentation): train.seed otherwise only seeds the shuffle
+        fix_randomness(params.train.seed)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Device is {self.device.type}")
 
