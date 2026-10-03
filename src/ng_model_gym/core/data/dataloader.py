@@ -173,6 +173,10 @@ def get_dataloader(
         prefetch_factor=prefetch_factor if num_workers > 0 else None,
         drop_last=True,
         persistent_workers=num_workers > 0,
+        # spawn, not fork: validation workers start after torch.compile has grown the trainer to >10 GB of
+        # host memory, and forked workers carried that footprint along (4 workers pushed a 32 GB host into swap).
+        # (forkserver fails here with "too many fds".)
+        multiprocessing_context="spawn" if num_workers > 0 else None,
         worker_init_fn=seed_worker,
         generator=g,
     )
