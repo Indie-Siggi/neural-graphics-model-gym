@@ -1050,10 +1050,10 @@ class TestNSSV1Model(  # pylint: disable=too-many-public-methods
         self.assertTrue(torch.all(captured_inputs[2]["motion"] == 0))
         self.assertTrue(torch.all(captured_inputs[2]["motion_lr"] == 0))
 
-    def test_gt_history_augmentation_uses_target_space_history_during_training(
+    def test_gt_history_augmentation_uses_linear_history_during_training(
         self,
     ) -> None:
-        """GT history augmentation seeds first-frame history from loss target."""
+        """GT history augmentation seeds first-frame history from linear GT."""
 
         self.params.model.gt_history_augmentation = True
         self.params.model.gt_history_augmentation_chance = 100.0
@@ -1073,7 +1073,7 @@ class TestNSSV1Model(  # pylint: disable=too-many-public-methods
 
         torch.testing.assert_close(
             captured_inputs[0]["history"],
-            y_true[:, 0, ...],
+            data["ground_truth_linear"][:, 0, ...],
             rtol=0,
             atol=0,
         )

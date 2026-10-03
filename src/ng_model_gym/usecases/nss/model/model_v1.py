@@ -165,7 +165,9 @@ class NSSV1Model(BaseNGModel):
             raise ValueError("NSS-v1 forward requires at least one recurrent frame.")
 
         outputs: Dict[str, list[torch.Tensor]] = {}
-        ground_truth = getattr(self, "y_true", None)
+        # History is linear, before exposure (``output_linear``); seed it from the
+        # linear ground truth, not from the tonemapped loss target ``y_true``.
+        ground_truth = x.get("ground_truth_linear")
         for t, inputs in enumerate(inputs_over_time):
             inputs = self.set_buffers(inputs)
             inputs = self._maybe_apply_gt_history_augmentation(
@@ -569,7 +571,7 @@ class NSSV1Model(BaseNGModel):
         ground_truth: Optional[torch.Tensor],
         time_index: int,
     ) -> Dict[str, torch.Tensor]:
-        """Randomly initialize first-frame history from target-space ground truth."""
+        """Randomly initialize first-frame history from linear ground truth."""
 
         if (
             not self.training
@@ -591,6 +593,8 @@ class NSSV1Model(BaseNGModel):
             device=inputs["history"].device,
             dtype=inputs["history"].dtype,
         )
+        max_val = HDR_MAX / inputs["exposure"]  # the same clamp as the loss target
+        gt_frame = clamp_tensor(gt_frame, torch.zeros_like(max_val), max_val)
         if gt_frame.shape != inputs["history"].shape:
             raise ValueError(
                 "GT history augmentation shape mismatch: expected "
