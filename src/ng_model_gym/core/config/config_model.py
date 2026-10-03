@@ -521,6 +521,11 @@ class Train(PydanticConfigModel):
         description="Clip the global gradient norm to this value before each optimizer step; null disables "
         "clipping. The norm is logged either way.",
     )
+    grad_probes: bool = Field(
+        default=False,
+        description="Log the largest |gradient| at the two places in the NSS v1 torch postprocess that can amplify "
+        "gradients (KPN weight sum, history-clamp variance) per batch into train_steps.csv. Diagnostic, small cost.",
+    )
     compile_unit: Literal["step", "frame"] = Field(
         default="step",
         description="What torch.compile compiles: the whole recurrent forward (step) or only the model's "

@@ -7,7 +7,7 @@ from typing import NamedTuple
 
 import torch
 
-from .sampling import EPS, expand_batch, MAX_HALF, output_coordinates
+from .sampling import EPS, expand_batch, grad_probe, MAX_HALF, output_coordinates
 
 
 class FilterColorResult(NamedTuple):
@@ -114,6 +114,7 @@ def filter_color(  # pylint: disable=too-many-arguments,too-many-locals
     preprocess_half_res_input: bool,
     use_sparse_filter_2x2: bool,
     filter_kernel_taps: int,
+    grad_probes=None,
 ) -> FilterColorResult:
     """Translate the shader's ordered sparse LUT/KPN filter accumulation."""
 
@@ -218,6 +219,7 @@ def filter_color(  # pylint: disable=too-many-arguments,too-many-locals
     center_sample = torch.cat(
         (center_color, center_valid[:, None].to(center_color.dtype)), dim=1
     )
+    weight_sum = grad_probe(weight_sum, grad_probes, "kpn_weight_sum")
     denominator = torch.maximum(weight_sum, weight_sum.new_tensor(EPS)).unsqueeze(1)
     return FilterColorResult(
         m1=m1_sum / denominator,

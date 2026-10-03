@@ -410,6 +410,7 @@ class NSSV1Model(BaseNGModel):
                 packed_nearest_offset_quad=self.packed_nearest_offset_quad,
                 sharp_theta=self.nss_v1_sharp_theta,
                 filter_kernel_taps=self.filter_kernel_taps,
+                grad_probes=getattr(self, "grad_probes", None),
             )
         else:
             self._require_cuda_for_slang_forward(inputs)

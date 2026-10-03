@@ -8,6 +8,29 @@ from typing import NamedTuple
 import torch
 
 EPS = 1.0e-7
+
+
+class _GradProbe(torch.autograd.Function):
+    """Identity whose backward also writes the largest |gradient| into `sink.grad` (a scalar leaf tensor).
+
+    A diagnostic without hooks or Python side effects, so it also works under torch.compile. The sink's gradient
+    accumulates (sums) over calls until it is cleared."""
+
+    @staticmethod
+    def forward(_context, tensor: torch.Tensor, sink: torch.Tensor):  # pylint: disable=arguments-differ
+        return tensor.view_as(tensor)
+
+    @staticmethod
+    def backward(_context, gradient: torch.Tensor):  # pylint: disable=arguments-differ
+        return gradient, gradient.detach().abs().amax().float()
+
+
+def grad_probe(tensor: torch.Tensor, probes, name: str) -> torch.Tensor:
+    """Route `tensor` through probe `name` of the dict `probes` (None or a missing name: unchanged)."""
+
+    if probes is None or name not in probes:
+        return tensor
+    return _GradProbe.apply(tensor, probes[name])
 MAX_HALF = 65504.0
 
 

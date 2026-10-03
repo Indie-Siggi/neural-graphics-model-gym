@@ -119,6 +119,7 @@ class TestTrainerMethods(unittest.TestCase):
         self.mock_trainer.starting_epoch = 1
         self.mock_trainer.accumulation_steps = 1
         self.mock_trainer.grad_clip_norm = None
+        self.mock_trainer.grad_probe_names = ()
         self.mock_trainer._step_log = []
         self._tmp = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
         self.mock_trainer._step_log_path = Path(self._tmp.name) / "train_steps.csv"

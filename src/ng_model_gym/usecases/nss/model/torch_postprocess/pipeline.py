@@ -13,6 +13,7 @@ from .filter import filter_color
 from .sampling import (
     EPS,
     fused_multiply_add,
+    grad_probe,
     load_motion,
     MAX_HALF,
     output_coordinates,
@@ -101,6 +102,7 @@ def rectify_history(
     onscreen: torch.Tensor | float,
     *,
     contract_variance: bool = True,
+    grad_probes=None,
 ) -> torch.Tensor:
     """Clamp history to moments, then apply reset and onscreen gates."""
 
@@ -109,6 +111,7 @@ def rectify_history(
     else:
         # The bilinear shader specialization keeps this subtraction unfused.
         variance = m2 - m1 * m1
+    variance = grad_probe(variance, grad_probes, "variance")
     variance = torch.maximum(torch.abs(variance), variance.new_tensor(EPS))
     sigma = torch.sqrt(variance) * gamma
     reset_value = (
@@ -284,8 +287,10 @@ def postprocess_torch(
     packed_nearest_offset_quad: bool,
     sharp_theta: bool,
     filter_kernel_taps: int,
+    grad_probes=None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run differentiable native PyTorch NSS v1 postprocessing."""
+    """Run differentiable native PyTorch NSS v1 postprocessing. `grad_probes` (optional): {"kpn_weight_sum",
+    "variance"} -> scalar leaf tensors that receive the largest |gradient| at those two places (see grad_probe)."""
 
     dimensions = _validate_postprocess_inputs(
         in_color=in_color,
@@ -320,6 +325,7 @@ def postprocess_torch(
         preprocess_half_res_input=preprocess_half_res_input,
         use_sparse_filter_2x2=use_sparse_filter_2x2,
         filter_kernel_taps=filter_kernel_taps,
+        grad_probes=grad_probes,
     )
     temporal = sample_temporal_params(
         in_temporal_params,
@@ -370,6 +376,7 @@ def postprocess_torch(
         reset,
         onscreen,
         contract_variance=use_history_catmull,
+        grad_probes=grad_probes,
     )
 
     rectified_mapped = karis_forward(rectified)

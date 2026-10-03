@@ -127,6 +127,14 @@ class Trainer:
         # <output dir>/train_steps.csv on logging batches (one sync per log interval).
         self._step_log = []
         self._step_log_path = Path(params.output.dir) / "train_steps.csv"
+        # Optional gradient probes in the NSS v1 torch postprocess: scalar leaf tensors on the model whose .grad
+        # receives the largest |gradient| at each probed place (not parameters: no optimizer, no clipping norm).
+        self.grad_probe_names = ("kpn_weight_sum", "variance") if params.train.grad_probes else ()
+        if self.grad_probe_names:
+            self.model.grad_probes = {
+                name: torch.zeros((), device=self.device, requires_grad=True)
+                for name in self.grad_probe_names
+            }
         # The schedule counts optimizer steps, not batches.
         self.lr_schedule = get_lr_schedule(
             self.training_mode_params,
@@ -413,7 +421,17 @@ class Trainer:
             if self.lr_schedule:
                 self.lr_schedule.step()
 
-        self._step_log.append((iteration, loss.detach(), grad_norm))
+        probes = None
+        if self.grad_probe_names:
+            probes = torch.stack(
+                [
+                    p.grad if p.grad is not None else torch.zeros((), device=p.device)
+                    for p in self.model.grad_probes.values()
+                ]
+            )
+            for p in self.model.grad_probes.values():
+                p.grad = None
+        self._step_log.append((iteration, loss.detach(), grad_norm, probes))
         return inference_out, loss, ground_truth_data
 
     def _flush_step_log(self, epoch):
@@ -422,20 +440,31 @@ class Trainer:
 
         if not self._step_log:
             return None
-        losses = torch.stack([l for _, l, _ in self._step_log]).tolist()
-        norms = [n for _, _, n in self._step_log if n is not None]
+        losses = torch.stack([e[1] for e in self._step_log]).tolist()
+        probes = (
+            torch.stack([e[3] for e in self._step_log]).tolist()
+            if self.grad_probe_names
+            else [[] for _ in self._step_log]
+        )
+        norms = [e[2] for e in self._step_log if e[2] is not None]
         norms = iter(torch.stack(norms).tolist()) if norms else iter(())
         new_file = not self._step_log_path.exists()
         self._step_log_path.parent.mkdir(parents=True, exist_ok=True)
         max_norm = None
         with open(self._step_log_path, "a", encoding="utf-8") as f:
             if new_file:
-                f.write("epoch,batch,loss,grad_norm\n")
-            for (batch, _, n), loss_value in zip(self._step_log, losses):
+                f.write(
+                    ",".join(["epoch", "batch", "loss", "grad_norm"]
+                             + [f"probe_{n}" for n in self.grad_probe_names]) + "\n"
+                )
+            for entry, loss_value, probe_values in zip(self._step_log, losses, probes):
+                batch, n = entry[0], entry[2]
                 norm = next(norms) if n is not None else None
                 if norm is not None:
                     max_norm = norm if max_norm is None else max(max_norm, norm)
-                f.write(f"{epoch},{batch},{loss_value:.6g},{'' if norm is None else f'{norm:.6g}'}\n")
+                fields = [str(epoch), str(batch), f"{loss_value:.6g}", "" if norm is None else f"{norm:.6g}"]
+                fields += [f"{v:.6g}" for v in probe_values]
+                f.write(",".join(fields) + "\n")
         self._step_log.clear()
         return max_norm
 

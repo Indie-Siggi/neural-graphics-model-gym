@@ -247,6 +247,35 @@ def _run_native_postprocess(
 class TestNSSV1TorchPostprocessKernel(unittest.TestCase):
     """Direct contracts for the public native PyTorch post-process kernel."""
 
+    def test_grad_probes_record_max_gradient_without_changing_results(self):
+        """Gradient probes leave outputs and gradients unchanged and receive max |grad|"""
+
+        results = []
+        for probed in (False, True):
+            case = create_nss_v1_postprocess_case(
+                "mid", torch.device("cpu"), backend="torch", lr_shape=(8, 12)
+            )
+            arguments = _native_arguments(case)
+            kpn = arguments["in_kpn_params"].detach().clone().requires_grad_(True)
+            arguments["in_kpn_params"] = kpn
+            probes = None
+            if probed:
+                probes = {
+                    name: torch.zeros((), requires_grad=True)
+                    for name in ("kpn_weight_sum", "variance")
+                }
+                arguments["grad_probes"] = probes
+            output, filtered = post_process(**arguments)
+            (output.square().sum() + filtered.sum()).backward()
+            results.append((output.detach(), kpn.grad.clone(), probes))
+        torch.testing.assert_close(results[0][0], results[1][0], rtol=0, atol=0)
+        torch.testing.assert_close(results[0][1], results[1][1], rtol=0, atol=0)
+        for name, sink in results[1][2].items():
+            with self.subTest(probe=name):
+                self.assertIsNotNone(sink.grad)
+                self.assertTrue(torch.isfinite(sink.grad))
+                self.assertGreater(sink.grad.item(), 0.0)
+
     def test_slang_backward_identity_repeats_wrapped_dispatch_threads(self):
         """Backward must reproduce Slang's modulo-wrapped 256-thread launch."""
 
