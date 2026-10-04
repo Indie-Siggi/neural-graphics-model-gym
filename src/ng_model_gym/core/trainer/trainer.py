@@ -470,9 +470,10 @@ class Trainer:
 
             self.model.y_true = ground_truth_data
 
-            inference_out = self.model(inputs_dataset)
+            # Same module and weights as self.model; compiled when train.compile is set
+            inference_out = self._training_model(inputs_dataset)
 
-            loss = self.criterion(ground_truth_data, inference_out)
+            loss = self._training_loss(ground_truth_data, inference_out)
 
             # Accumulate the loss
             running_val_loss += loss.item()
