@@ -25,12 +25,25 @@ class _GradProbe(torch.autograd.Function):
         return gradient, gradient.detach().abs().amax().float()
 
 
-def grad_probe(tensor: torch.Tensor, probes, name: str) -> torch.Tensor:
-    """Route `tensor` through probe `name` of the dict `probes` (None or a missing name: unchanged)."""
+class _GradNormProbe(torch.autograd.Function):
+    """Like _GradProbe, but writes the L2 norm of the gradient."""
+
+    @staticmethod
+    def forward(_context, tensor: torch.Tensor, sink: torch.Tensor):  # pylint: disable=arguments-differ
+        return tensor.view_as(tensor)
+
+    @staticmethod
+    def backward(_context, gradient: torch.Tensor):  # pylint: disable=arguments-differ
+        return gradient, torch.linalg.vector_norm(gradient.detach().float())
+
+
+def grad_probe(tensor: torch.Tensor, probes, name: str, norm: bool = False) -> torch.Tensor:
+    """Route `tensor` through probe `name` of the dict `probes` (None or a missing name: unchanged). The probe
+    records the largest |gradient|, or with `norm` its L2 norm."""
 
     if probes is None or name not in probes:
         return tensor
-    return _GradProbe.apply(tensor, probes[name])
+    return (_GradNormProbe if norm else _GradProbe).apply(tensor, probes[name])
 MAX_HALF = 65504.0
 
 

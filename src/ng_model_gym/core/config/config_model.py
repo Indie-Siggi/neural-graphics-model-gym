@@ -524,7 +524,15 @@ class Train(PydanticConfigModel):
     grad_probes: bool = Field(
         default=False,
         description="Log the largest |gradient| at the two places in the NSS v1 torch postprocess that can amplify "
-        "gradients (KPN weight sum, history-clamp variance) per batch into train_steps.csv. Diagnostic, small cost.",
+        "gradients (KPN weight sum, history-clamp variance), and the gradient norm at the history input of every "
+        "recurrent frame after the first, per batch into train_steps.csv. Diagnostic, small cost.",
+    )
+    history_grad_frames: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Truncated backpropagation through time: every N recurrent frames the history buffers are "
+        "detached, so a frame's loss reaches back at most N frames through the history; null backpropagates "
+        "through the whole window.",
     )
     compile_unit: Literal["step", "frame"] = Field(
         default="step",

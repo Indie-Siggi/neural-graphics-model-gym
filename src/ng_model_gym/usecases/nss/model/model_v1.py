@@ -32,6 +32,7 @@ from ng_model_gym.usecases.nss.model.quality_modes import (
     resolve_nss_v1_quality,
 )
 from ng_model_gym.usecases.nss.model.torch_postprocess.pipeline import postprocess_torch
+from ng_model_gym.usecases.nss.model.torch_postprocess.sampling import grad_probe
 from ng_model_gym.usecases.nss.model.torch_preprocess.pipeline import preprocess_torch
 from ng_model_gym.usecases.nss.utils.ground_truth_utils import (
     resize_ground_truth_to_spatial_shape,
@@ -168,13 +169,18 @@ class NSSV1Model(BaseNGModel):
         # History is linear, before exposure (``output_linear``); seed it from the
         # linear ground truth, not from the tonemapped loss target ``y_true``.
         ground_truth = x.get("ground_truth_linear")
+        history_grad_frames = getattr(self.params.train, "history_grad_frames", None)
+        probes = getattr(self, "grad_probes", None)
         for t, inputs in enumerate(inputs_over_time):
+            if history_grad_frames and t > 0 and t % history_grad_frames == 0:
+                self.detach_buffers()
             inputs = self.set_buffers(inputs)
             inputs = self._maybe_apply_gt_history_augmentation(
                 inputs,
                 ground_truth=ground_truth,
                 time_index=t,
             )
+            inputs["history"] = grad_probe(inputs["history"], probes, f"history_t{t:02d}", norm=True)
             y_pred = self.core_forward(inputs)
             y_pred.pop("motion", None)
             y_pred.pop("reset_event", None)

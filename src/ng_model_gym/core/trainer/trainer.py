@@ -129,7 +129,14 @@ class Trainer:
         self._step_log_path = Path(params.output.dir) / "train_steps.csv"
         # Optional gradient probes in the NSS v1 torch postprocess: scalar leaf tensors on the model whose .grad
         # receives the largest |gradient| at each probed place (not parameters: no optimizer, no clipping norm).
-        self.grad_probe_names = ("kpn_weight_sum", "variance") if params.train.grad_probes else ()
+        # Plus the gradient norm at the history input of each recurrent frame after the first (frame 0's history
+        # is the reset value or ground truth, nothing upstream).
+        self.grad_probe_names = (
+            ("kpn_weight_sum", "variance")
+            + tuple(f"history_t{t:02d}" for t in range(1, params.model.recurrent_samples))
+            if params.train.grad_probes
+            else ()
+        )
         if self.grad_probe_names:
             self.model.grad_probes = {
                 name: torch.zeros((), device=self.device, requires_grad=True)
