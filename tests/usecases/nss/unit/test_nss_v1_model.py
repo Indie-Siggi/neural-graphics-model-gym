@@ -781,6 +781,45 @@ class TestNSSV1Model(  # pylint: disable=too-many-public-methods
         self.assertEqual(len(captured_inputs), 1)
         self.assertEqual(model_out["output_linear"].shape[1], 1)
 
+    def _last_frame_weight_gradient(self, **train_options) -> tuple[float, int]:
+        """d(sum of the last frame's output)/d(weight) through the recurrent forward, with core_forward
+        replaced by output = weight * history + 1 (history starts at zero)."""
+
+        for name, value in train_options.items():
+            setattr(self.params.train, name, value)
+        model = create_model(self.params, self.device)
+        weight = torch.tensor(1.5, device=self.device, requires_grad=True)
+
+        def core_forward(inputs):
+            output_linear = weight * inputs["history"] + 1.0
+            return {
+                "output": output_linear,
+                "output_linear": output_linear,
+                "out_filtered": output_linear,
+                "temporal_params": inputs["temporal_params_tm1"],
+                "derivative": inputs["derivative_tm1"],
+            }
+
+        model.core_forward = core_forward
+        last = model(self._data_creator_helper(128, 128, 256, 256))["output_linear"][:, -1]
+        last.sum().backward()
+        return weight.grad.item(), last.numel()
+
+    def test_history_gradient_truncation_and_clip(self) -> None:
+        """history_grad_frames cuts the recurrence; history_grad_clip bounds it, and a clip that is never
+        reached leaves the gradient unchanged"""
+
+        w = 1.5  # four frames: last output = w^3 + w^2 + w + 1 per element
+        full, n = self._last_frame_weight_gradient()
+        self.assertAlmostEqual(full / n, 3 * w**2 + 2 * w + 1, places=4)
+        truncated, _ = self._last_frame_weight_gradient(history_grad_frames=2)
+        self.assertAlmostEqual(truncated / n, 2 * w**2 + 2 * w + 1, places=4)
+        self.params.train.history_grad_frames = None
+        unreached, _ = self._last_frame_weight_gradient(history_grad_clip=1e9)
+        self.assertEqual(unreached, full)
+        clipped, _ = self._last_frame_weight_gradient(history_grad_clip=1e-6)
+        self.assertAlmostEqual(clipped / n, w**2 + w + 1, places=4)  # only the last frame's own term is left
+
     def test_split_inputs_over_time_matches_select_indexing(self) -> None:
         """Pre-split per-frame inputs match select-based indexing."""
 

@@ -32,7 +32,10 @@ from ng_model_gym.usecases.nss.model.quality_modes import (
     resolve_nss_v1_quality,
 )
 from ng_model_gym.usecases.nss.model.torch_postprocess.pipeline import postprocess_torch
-from ng_model_gym.usecases.nss.model.torch_postprocess.sampling import grad_probe
+from ng_model_gym.usecases.nss.model.torch_postprocess.sampling import (
+    grad_clip,
+    grad_probe,
+)
 from ng_model_gym.usecases.nss.model.torch_preprocess.pipeline import preprocess_torch
 from ng_model_gym.usecases.nss.utils.ground_truth_utils import (
     resize_ground_truth_to_spatial_shape,
@@ -170,6 +173,7 @@ class NSSV1Model(BaseNGModel):
         # linear ground truth, not from the tonemapped loss target ``y_true``.
         ground_truth = x.get("ground_truth_linear")
         history_grad_frames = getattr(self.params.train, "history_grad_frames", None)
+        history_grad_clip = getattr(self.params.train, "history_grad_clip", None)
         probes = getattr(self, "grad_probes", None)
         for t, inputs in enumerate(inputs_over_time):
             if history_grad_frames and t > 0 and t % history_grad_frames == 0:
@@ -180,6 +184,9 @@ class NSSV1Model(BaseNGModel):
                 ground_truth=ground_truth,
                 time_index=t,
             )
+            for key in ("history", "temporal_params_tm1", "derivative_tm1"):
+                inputs[key] = grad_clip(inputs[key], history_grad_clip)
+            # After the clip in the forward pass, so the probe sees the unclipped gradient.
             inputs["history"] = grad_probe(inputs["history"], probes, f"history_t{t:02d}", norm=True)
             y_pred = self.core_forward(inputs)
             y_pred.pop("motion", None)

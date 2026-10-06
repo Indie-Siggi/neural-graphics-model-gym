@@ -37,6 +37,32 @@ class _GradNormProbe(torch.autograd.Function):
         return gradient, torch.linalg.vector_norm(gradient.detach().float())
 
 
+class _GradClip(torch.autograd.Function):
+    """Identity whose backward rescales each sample's gradient (batch dimension 0) to an L2 norm of at most
+    `max_norm`; gradients below it pass unchanged."""
+
+    @staticmethod
+    def forward(context, tensor: torch.Tensor, max_norm: float):  # pylint: disable=arguments-differ
+        context.max_norm = max_norm
+        return tensor.view_as(tensor)
+
+    @staticmethod
+    def backward(context, gradient: torch.Tensor):  # pylint: disable=arguments-differ
+        norm = torch.linalg.vector_norm(
+            gradient.float(), dim=tuple(range(1, gradient.dim())), keepdim=True
+        )
+        scale = (context.max_norm / norm.clamp_min(1e-30)).clamp(max=1.0)
+        return gradient * scale.to(gradient.dtype), None
+
+
+def grad_clip(tensor: torch.Tensor, max_norm) -> torch.Tensor:
+    """Clip the gradient flowing back into `tensor` per sample to `max_norm` (None: unchanged)."""
+
+    if max_norm is None or not tensor.requires_grad:
+        return tensor
+    return _GradClip.apply(tensor, float(max_norm))
+
+
 def grad_probe(tensor: torch.Tensor, probes, name: str, norm: bool = False) -> torch.Tensor:
     """Route `tensor` through probe `name` of the dict `probes` (None or a missing name: unchanged). The probe
     records the largest |gradient|, or with `norm` its L2 norm."""

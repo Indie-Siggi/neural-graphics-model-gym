@@ -534,6 +534,14 @@ class Train(PydanticConfigModel):
         "detached, so a frame's loss reaches back at most N frames through the history; null backpropagates "
         "through the whole window.",
     )
+    history_grad_clip: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description="Clip the gradient flowing back into each recurrent buffer (history, temporal parameters, "
+        "derivative) at every frame to this L2 norm per sample; smaller gradients pass unchanged, so calm steps "
+        "keep full backpropagation. null disables. The per-frame history probes log the unclipped norm over the "
+        "whole batch (about sqrt(batch size) times a per-sample norm).",
+    )
     compile_unit: Literal["step", "frame"] = Field(
         default="step",
         description="What torch.compile compiles: the whole recurrent forward (step) or only the model's "
