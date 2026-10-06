@@ -204,6 +204,16 @@
                 ],
                 "default": null,
                 "description": "Test dataset directory path"
+            },
+            "checks": {
+                "anyOf": [
+                    {},
+                    {
+                        "type": "null"
+                    }
+                ],
+                "default": null,
+                "description": "Named check sets: extra validation directories in the validation set's format (e.g. crops of one hard case), scored with the validation set on every validation epoch and logged to TensorBoard as Check/<name>/<metric>. They do not affect the best checkpoint. Each needs at least train.batch_size samples (incomplete batches are dropped)."
             }
         },
         "color_preprocessing": {
@@ -474,6 +484,12 @@
             "minimum": 0,
             "type": "integer"
         },
+        "window_stride": {
+            "default": 1,
+            "description": "Frames between the starts of consecutive recurrent training/validation windows (1: a window at every frame). The last window of each sequence is always kept, so every frame stays covered.",
+            "minimum": 1,
+            "type": "integer"
+        },
         "prefetch_factor": {
             "description": "Number of batches loaded in advance by each dataloader worker. Used only if num_workers > 0",
             "exclusiveMinimum": 0,
@@ -578,6 +594,80 @@
             "default": false,
             "description": "Enable torch.compile for the training step.",
             "type": "boolean"
+        },
+        "gradient_accumulation_steps": {
+            "default": 1,
+            "description": "Number of batches whose gradients are summed before each optimizer step: the effective batch size is batch_size * gradient_accumulation_steps, at the memory cost of batch_size.",
+            "minimum": 1,
+            "type": "integer"
+        },
+        "log_interval": {
+            "default": 1,
+            "description": "Batches between progress-bar/TensorBoard updates. Train metrics are also only updated on these batches (a sample; updating them costs ~28 % of a step), while the loss average and validation use every batch.",
+            "minimum": 1,
+            "type": "integer"
+        },
+        "grad_clip_norm": {
+            "anyOf": [
+                {
+                    "exclusiveMinimum": 0.0,
+                    "type": "number"
+                },
+                {
+                    "type": "null"
+                }
+            ],
+            "default": null,
+            "description": "Clip the global gradient norm to this value before each optimizer step; null disables clipping. The norm is logged either way."
+        },
+        "grad_probes": {
+            "default": false,
+            "description": "Log the largest |gradient| at the two places in the NSS v1 torch postprocess that can amplify gradients (KPN weight sum, history-clamp variance), and the gradient norm at the history input of every recurrent frame after the first, per batch into train_steps.csv. Diagnostic, small cost.",
+            "type": "boolean"
+        },
+        "history_grad_frames": {
+            "anyOf": [
+                {
+                    "minimum": 1,
+                    "type": "integer"
+                },
+                {
+                    "type": "null"
+                }
+            ],
+            "default": null,
+            "description": "Truncated backpropagation through time: every N recurrent frames the history buffers are detached, so a frame's loss reaches back at most N frames through the history; null backpropagates through the whole window."
+        },
+        "history_grad_clip": {
+            "anyOf": [
+                {
+                    "exclusiveMinimum": 0.0,
+                    "type": "number"
+                },
+                {
+                    "type": "null"
+                }
+            ],
+            "default": null,
+            "description": "Clip the gradient flowing back into each recurrent buffer (history, temporal parameters, derivative) at every frame to this L2 norm per sample; smaller gradients pass unchanged, so calm steps keep full backpropagation. null disables. The per-frame history probes log the unclipped norm over the whole batch (about sqrt(batch size) times a per-sample norm)."
+        },
+        "compile_unit": {
+            "default": "step",
+            "description": "What torch.compile compiles: the whole recurrent forward (step) or only the model's one-frame core_forward, with the recurrent loop eager (frame; much faster to compile).",
+            "enum": [
+                "step",
+                "frame"
+            ],
+            "type": "string"
+        },
+        "network_dtype": {
+            "default": "fp32",
+            "description": "Compute dtype of the neural network on CUDA: bf16 runs it under torch.autocast. Weights, optimizer state and the pre/post-processing stay fp32.",
+            "enum": [
+                "fp32",
+                "bf16"
+            ],
+            "type": "string"
         },
         "validate_frequency": {
             "anyOf": [
