@@ -353,6 +353,44 @@ class TestTrainerMethods(unittest.TestCase):
         self.assertEqual(trainer.model.on_validation_start.call_count, 2)
         self.assertEqual(trainer.model.on_validation_end.call_count, 2)
 
+    def test_validate_scores_check_sets_without_changing_the_validation_loss(self):
+        """Check sets are logged as Check/<name>/... and leave avg_val_loss to the validation set"""
+
+        trainer = self.mock_trainer
+        trainer.validate = MethodType(Trainer.validate, trainer)
+        trainer._get_values_for_logging = MethodType(
+            Trainer._get_values_for_logging, trainer
+        )
+        trainer._tensorboard_update = Mock()
+        # The loss is the ground truth's value: 0.1 on validation, 0.7 and 0.3 on the check sets.
+        trainer._training_loss = Mock(side_effect=lambda gt, out: gt.mean())
+
+        def loader(value, batches):
+            return [
+                ({"x": self.mock_input.clone()}, torch.full((1, 1), value))
+                for _ in range(batches)
+            ]
+
+        trainer.val_dataloader = loader(0.1, 2)
+        trainer.check_dataloaders = {
+            "camera_locked": loader(0.7, 2),
+            "fast_motion": loader(0.3, 3),
+        }
+
+        trainer.validate(1)
+
+        self.assertAlmostEqual(trainer.avg_val_loss, 0.1, places=6)
+        logged = {}
+        for call in trainer._tensorboard_update.call_args_list:
+            logged.update(call.args[0])
+        self.assertEqual(
+            set(logged),
+            {"Validation/Loss", "Check/camera_locked/Loss", "Check/fast_motion/Loss"},
+        )
+        self.assertAlmostEqual(logged["Validation/Loss"], 0.1, places=6)
+        self.assertAlmostEqual(logged["Check/camera_locked/Loss"], 0.7, places=6)
+        self.assertAlmostEqual(logged["Check/fast_motion/Loss"], 0.3, places=6)
+
     def test_save_checkpoint_overwrites_best_ckpt_correctly(self):
         """Test that best checkpoint is overwritten only when loss improves"""
         with tempfile.TemporaryDirectory() as temp_dir:

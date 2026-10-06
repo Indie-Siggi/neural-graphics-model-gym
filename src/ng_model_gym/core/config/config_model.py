@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import pathlib
 from numbers import Real
-from typing import Annotated, Any, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import (
     BaseModel,
@@ -79,6 +79,13 @@ class Paths(PydanticConfigModel):
     )
     test: Optional[pathlib.Path] = Field(
         description="Test dataset directory path", default=None
+    )
+    checks: Optional[Dict[str, pathlib.Path]] = Field(
+        default=None,
+        description="Named check sets: extra validation directories in the validation set's format (e.g. crops "
+        "of one hard case), scored with the validation set on every validation epoch and logged to TensorBoard "
+        "as Check/<name>/<metric>. They do not affect the best checkpoint. Each needs at least train.batch_size "
+        "samples (incomplete batches are dropped).",
     )
 
 

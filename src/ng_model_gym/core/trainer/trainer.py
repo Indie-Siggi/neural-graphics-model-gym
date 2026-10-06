@@ -105,6 +105,16 @@ class Trainer:
                 prefetch_factor=self.params.dataset.prefetch_factor,
                 loader_mode=DataLoaderMode.VAL,
             )
+        # Named check sets (dataset.path.checks): validation-mode loaders over other directories, loaded in the
+        # main process (small sets; no extra persistent workers).
+        self.check_dataloaders = {}
+        if self.params.train.perform_validate and self.params.dataset.path.checks:
+            for name, path in self.params.dataset.path.checks.items():
+                check_params = self.params.model_copy(deep=True)
+                check_params.dataset.path.validation = path
+                self.check_dataloaders[name] = get_dataloader(
+                    check_params, num_workers=0, loader_mode=DataLoaderMode.VAL
+                )
 
         self.criterion = get_loss_fn(self.params, self.device)
         self.starting_epoch = 1
@@ -555,79 +565,13 @@ class Trainer:
         self.model.on_train_end()
 
     def validate(self, epoch):
-        """Start validation loop."""
-        total_epochs = self.training_mode_params.number_of_epochs
+        """Start validation loop, then score the named check sets (TensorBoard Check/<name>/...); only the
+        validation set's loss selects the best checkpoint."""
 
-        val_pbar = tqdm(
-            enumerate(self.val_dataloader, 0),
-            total=len(self.val_dataloader),
-            desc=f"Validation: Epoch {epoch}/{total_epochs}",
-            leave=True,
-        )
-
-        self.model.eval()
-        self.model.on_validation_start()
-        running_val_loss = torch.zeros((), dtype=torch.float64, device=self.device)
-        stuck_sums = {}
-        total_batches = len(self.val_dataloader)
-        log_interval = self.params.train.log_interval
-
-        for iteration, (inputs_dataset, ground_truth_data) in val_pbar:
-            # Move tensors to device.
-            inputs_dataset, ground_truth_data = self.model.on_before_batch_transfer(
-                (inputs_dataset, ground_truth_data)
-            )
-            inputs_dataset = move_to_device(inputs_dataset, self.device)
-            ground_truth_data = move_to_device(ground_truth_data, self.device)
-            inputs_dataset, ground_truth_data = self.model.on_after_batch_transfer(
-                (inputs_dataset, ground_truth_data)
-            )
-
-            self.model.y_true = ground_truth_data
-
-            # Same module and weights as self.model; compiled when train.compile is set
-            inference_out = self._training_model(inputs_dataset)
-
-            loss = self._training_loss(ground_truth_data, inference_out)
-
-            # Accumulate the loss
-            running_val_loss += loss.detach()
-            for k, v in stuck_fractions(inference_out, as_tensor=True).items():
-                stuck_sums[k] = stuck_sums.get(k, 0) + v
-
-            for metric in self.val_metrics:
-                metric.update(inference_out["output"], ground_truth_data)
-
-            if (iteration + 1) % log_interval == 0 or iteration + 1 == total_batches:
-                # Calculate average loss
-                self.avg_val_loss = running_val_loss.item() / (iteration + 1)
-
-                progress_bar = (
-                    f"Validation: Epoch {epoch}/{total_epochs}, "
-                    f"Avg. Loss: {self.avg_val_loss:.4f}, "
-                )
-                for metric in self.val_metrics:
-                    progress_bar += f"{metric}: {metric.compute():.4f}, "
-
-                val_pbar.set_description(progress_bar)
-
-        #  Push validation set results to Tensorboard.
-        log_values = {"Loss": self.avg_val_loss}
-        log_values.update({k: v.item() / total_batches for k, v in stuck_sums.items()})
-        tb_values = self._get_values_for_logging(
-            log_values, self.val_metrics, name="Validation/"
-        )
-        if stuck_sums:
-            logger.info(
-                f"Validation epoch {epoch}: saturated sigmoid outputs "
-                + ", ".join(f"{k} {100 * log_values[k]:.2f} %" for k in stuck_sums)
-            )
-        self._tensorboard_update(tb_values, epoch)
-
-        for metric in self.val_metrics:
-            metric.reset()
-
-        self.model.on_validation_end()
+        self.avg_val_loss = _validate_set(self, self.val_dataloader, epoch, "Validation")
+        checks = getattr(self, "check_dataloaders", None)
+        for name, loader in checks.items() if isinstance(checks, dict) else ():
+            _validate_set(self, loader, epoch, f"Check/{name}")
 
     def _save_checkpoint(self, current_epoch):
         """Save checkpoint if end or configured save frequency epoch"""
@@ -670,6 +614,89 @@ class Trainer:
                     f"New best checkpoint from epoch {current_epoch} copied to {best_ckpt_path}"
                 )
             self.avg_val_loss = float("inf")  # Reset after saving
+
+
+def _validate_set(trainer, loader, epoch, name):
+    """One validation pass over `loader`: loss, the validation metrics and the saturation fractions, logged to
+    TensorBoard under `name`/. Returns the average loss. A module function, not a method, so tests that bind
+    Trainer.validate onto a mock trainer run it too."""
+
+    total_epochs = trainer.training_mode_params.number_of_epochs
+    label = "Validation" if name == "Validation" else name.replace("/", " ")
+    val_pbar = tqdm(
+        enumerate(loader, 0),
+        total=len(loader),
+        desc=f"{label}: Epoch {epoch}/{total_epochs}",
+        leave=True,
+    )
+
+    trainer.model.eval()
+    trainer.model.on_validation_start()
+    running_val_loss = torch.zeros((), dtype=torch.float64, device=trainer.device)
+    stuck_sums = {}
+    total_batches = len(loader)
+    log_interval = trainer.params.train.log_interval
+    avg_loss = float("inf")
+
+    for iteration, (inputs_dataset, ground_truth_data) in val_pbar:
+        # Move tensors to device.
+        inputs_dataset, ground_truth_data = trainer.model.on_before_batch_transfer(
+            (inputs_dataset, ground_truth_data)
+        )
+        inputs_dataset = move_to_device(inputs_dataset, trainer.device)
+        ground_truth_data = move_to_device(ground_truth_data, trainer.device)
+        inputs_dataset, ground_truth_data = trainer.model.on_after_batch_transfer(
+            (inputs_dataset, ground_truth_data)
+        )
+
+        trainer.model.y_true = ground_truth_data
+
+        # Same module and weights as trainer.model; compiled when train.compile is set
+        inference_out = trainer._training_model(inputs_dataset)
+
+        loss = trainer._training_loss(ground_truth_data, inference_out)
+
+        # Accumulate the loss
+        running_val_loss += loss.detach()
+        for k, v in stuck_fractions(inference_out, as_tensor=True).items():
+            stuck_sums[k] = stuck_sums.get(k, 0) + v
+
+        for metric in trainer.val_metrics:
+            metric.update(inference_out["output"], ground_truth_data)
+
+        if (iteration + 1) % log_interval == 0 or iteration + 1 == total_batches:
+            # Calculate average loss
+            avg_loss = running_val_loss.item() / (iteration + 1)
+
+            progress_bar = f"{label}: Epoch {epoch}/{total_epochs}, Avg. Loss: {avg_loss:.4f}, "
+            for metric in trainer.val_metrics:
+                progress_bar += f"{metric}: {metric.compute():.4f}, "
+
+            val_pbar.set_description(progress_bar)
+
+    #  Push the results to Tensorboard.
+    log_values = {"Loss": avg_loss}
+    log_values.update({k: v.item() / total_batches for k, v in stuck_sums.items()})
+    tb_values = trainer._get_values_for_logging(
+        log_values, trainer.val_metrics, name=f"{name}/"
+    )
+    if stuck_sums:
+        logger.info(
+            f"{label} epoch {epoch}: saturated sigmoid outputs "
+            + ", ".join(f"{k} {100 * log_values[k]:.2f} %" for k in stuck_sums)
+        )
+    if name != "Validation" and isinstance(tb_values, dict):
+        logger.info(
+            f"{label} epoch {epoch}: "
+            + ", ".join(f"{k.rsplit('/', 1)[-1]} {float(v):.4f}" for k, v in tb_values.items())
+        )
+    trainer._tensorboard_update(tb_values, epoch)
+
+    for metric in trainer.val_metrics:
+        metric.reset()
+
+    trainer.model.on_validation_end()
+    return avg_loss
 
 
 def get_lr_schedule(
