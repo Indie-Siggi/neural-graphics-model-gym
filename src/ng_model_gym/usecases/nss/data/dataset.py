@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import safetensors
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
@@ -13,6 +12,7 @@ from torcheval.metrics.functional import peak_signal_noise_ratio as psnr
 from tqdm.auto import tqdm
 
 from ng_model_gym.core.config.config_model import ConfigModel
+from ng_model_gym.core.data.chunked import open_capture
 from ng_model_gym.core.data.data_utils import DataLoaderMode, DatasetType
 from ng_model_gym.core.data.dataset_registry import register_dataset
 from ng_model_gym.core.model.layers.dense_warp import DenseWarp
@@ -304,7 +304,7 @@ class NSSDataset(Dataset):
         window_sequence_map: Dict[Path, Dict[int, int]] = {}
         capture_sequences: Dict[Path, List[Tuple[int, int]]] = {}
         for capture in captures:
-            with safetensors.safe_open(capture, framework="pt") as f:
+            with open_capture(capture, framework="pt") as f:
                 metadata = f.metadata()
                 seq_length = int(metadata["Length"])
 
@@ -383,7 +383,7 @@ class NSSDataset(Dataset):
         and extract recurrent window between start:stop indexes.
         """
         data_frame = {}
-        with safetensors.safe_open(capture_path, framework="pt", device="cpu") as f:
+        with open_capture(capture_path, framework="pt") as f:
             for k in f.keys():
                 if k in self.features_to_read:
                     # Clone slices so tensors are decoupled from the underlying safetensors

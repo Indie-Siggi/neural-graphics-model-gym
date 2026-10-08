@@ -6,9 +6,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Union
 
-import safetensors
 import torch
 
+from ng_model_gym.core.data.chunked import open_capture
 from ng_model_gym.core.utils.enum_definitions import ToneMapperMode
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ class DatasetType(str, Enum):
     """Dataset type, either .safetensors, .h5, .pt or .tftecord."""
 
     SAFETENSOR = ".safetensors"
+    SAFETENSOR_ZSTD = ".stz"  # per-frame zstd chunks, see chunked.py
     H5 = ".h5"
     PT = ".pt"
     TFRECORD = ".tfrecord"
@@ -155,7 +156,7 @@ def move_to_device(
 def generic_safetensors_reader(seq_path: Path, idx: int) -> dict:
     """Safetensors reader to return a dictionary of tensors"""
     data_frame = {}
-    with safetensors.safe_open(seq_path, framework="numpy", device="cpu") as f:
+    with open_capture(seq_path, framework="numpy") as f:
         for k in f.keys():
             # torch.from_numpy shares the safetensors-backed NumPy storage. Clone
             # tensors returned from this function so they do not keep the file mapped.
